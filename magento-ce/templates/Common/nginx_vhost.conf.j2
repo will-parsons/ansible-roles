@@ -27,6 +27,12 @@ server {
     location /media/ {
         try_files $uri uri/ /get.php;
         expires 30d;
+        
+        # Magento dashboard to Master server
+        proxy_set_header Host media-test.com;
+        if ($cookie_adminhtml) {
+            proxy_pass http://master;
+        }
     }
 
     location ~* \.(eot|ttf|woff)$ {
