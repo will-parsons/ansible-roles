@@ -1,0 +1,140 @@
+- name: Create 'parse' user
+  user:
+    name: '{{ parse_user }}'
+    system: yes
+    createhome: yes
+    password: '{{ parse_password|password_hash("sha512") }}'
+
+- name: Create 'cloud' directory for code
+  file:
+    path: '/home/{{ parse_user }}/cloud'
+    state: directory
+    owner: '{{ parse_user }}'
+
+- name: Create Git key
+  template:
+    src: 'Common/git_key.key.j2'
+    dest: '/root/git_key.key'
+    mode: 0600
+    owner: root
+    group: root
+  when:
+    - parse_git_key != ""
+    - parse_git_repo != ""
+
+- name: Clone Git repository
+  git:
+    accept_hostkey: yes
+    clone: yes
+    force: yes
+    key_file: '/root/git_key.key'
+    repo: '{{ parse_git_repo }}'
+    version: '{{ parse_git_version }}'
+    update: yes
+    dest: '/home/{{ parse_user }}/custom_code'
+  when:
+    - parse_git_repo != ""
+  register: parse_repo_updated
+
+- name: Copy code from Git repo
+  shell:
+    'cp -R /home/{{ parse_user }}/custom_code/* /home/{{ parse_user }}/'
+  when: parse_repo_updated.changed
+
+- name: Create test code (main.js)
+  template:
+    src: 'Common/main.js.j2'
+    dest: '/home/{{ parse_user }}/cloud/main.js'
+    owner: '{{ parse_user }}'
+    force: no
+
+- name: Create 'ecosystem.json'
+  template:
+    src: 'Common/ecosystem.json.j2'
+    dest: '/home/{{ parse_user }}/{{ parse_short_name }}.json'
+    owner: '{{ parse_user }}'
+    force: no
+
+- name: Run 'parse-server' via PM2 on startup
+  become: yes
+  become_user: 'root'
+  shell:
+    'pm2 startup ubuntu -u {{ parse_user }} --hp /home/{{ parse_user }} &> /dev/null'
+
+- name: Start pm2
+  become: yes
+  become_user: '{{ parse_user }}'
+  shell:
+    'pm2 start ~/{{ parse_short_name }}.json'
+
+- name: Save pm2
+  become: yes
+  become_user: '{{ parse_user }}'
+  shell:
+    'pm2 save'
+
+- name: Add to nginx vhost configuration
+  blockinfile:
+    backup: yes
+    dest: /etc/nginx/conf.d/{{ nginx_vhost_str }}.conf
+    marker: '# {mark} ANSIBLE MANAGED BLOCK - {{ parse_short_name }}'
+    insertafter: '#PARSE'
+    block: |
+              location /{{ parse_short_name }}/ {
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-NginX-Proxy true;
+                      proxy_pass http://localhost:{{ parse_port }}/parse/;
+                      proxy_ssl_session_reuse off;
+                      proxy_set_header Host $http_host;
+                      proxy_redirect off;
+              }
+    state: present
+
+- name: Reload nginx
+  service:
+    name: nginx
+    state: reloaded
+
+- name: Configure Upstart for Parse Dashboard
+  template:
+    src: 'Debian/upstart.config.j2'
+    dest: '/etc/init/parse-dashboard.conf'
+
+- name: Load Upstart configuration
+  shell:
+    'initctl reload-configuration'
+
+- name: Create example configuration for Parse Dashboard
+  template:
+    src: 'Common/parse-dashboard-config.json.j2'
+    dest: '/home/{{ parse_user }}/parse-dashboard-config.json.ansible'
+    owner: '{{ parse_user }}'
+    group: '{{ parse_user }}'
+    force: no
+  register: new_config
+
+- name: Add to Parse Dashboard Configuration
+  blockinfile:
+    backup: yes
+    dest: '/home/{{ parse_user }}/parse-dashboard-config.json.ansible'
+    marker: '# {mark} ANSIBLE MANAGED - {{ parse_app_name }}'
+    insertafter: 'apps'
+    block: '
+        {
+          "serverURL": "https://{{ nginx_vhost_str }}/{{ parse_short_name }}",
+          "appId": "{{ parse_application_id }}",
+          "masterKey": "{{ parse_master_key }}",
+          "appName": "{{ parse_app_name }}"
+        },
+        '
+  when: not new_config.changed
+
+- name: Generate Final Parse Dashboard Configuration
+  shell:
+    "grep -o '^[^#]*' /home/{{ parse_user }}/parse-dashboard-config.json.ansible > /home/{{ parse_user }}/parse-dashboard-config.json"
+
+- name: Start Parse Dashboard
+  service:
+    name: 'parse-dashboard'
+    state: restarted

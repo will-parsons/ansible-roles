@@ -2,9 +2,5 @@
 - include: install_debian.yaml
   when: ansible_os_family == 'Debian'
 
-- include: install_common.yaml
-
-- include: configure_debian.yml
+- include: 'configure_debian.yaml'
   when: ansible_os_family == 'Debian'
-
-- include: configure_common.yml

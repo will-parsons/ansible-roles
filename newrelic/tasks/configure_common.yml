@@ -1,0 +1,7 @@
+---
+- name: Configure NewRelic License Key
+  template:
+    src: Common/nrsysmond.cfg.j2
+    dest: /etc/newrelic/nrsysmond.cfg
+  notify:
+    - Restart NewRelic
